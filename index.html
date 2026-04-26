@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setoran Hafalan TIF - Rafif Hamka</title>
+    
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.10.2/dist/full.min.css" rel="stylesheet" type="text/css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="bg-base-200 min-h-screen text-base-content font-sans">
+    
+    <div id="root"></div>
+
+    <script type="text/babel" data-presets="react">
+        const { useState, useEffect } = React;
+
+        const CONFIG = {
+            KC_URL: 'https://id.tif.uin-suska.ac.id/realms/dev/protocol/openid-connect/token',
+            API_BASE: 'https://api.tif.uin-suska.ac.id/setoran-dev/v1',
+            CLIENT_ID: 'setoran-mobile-dev',
+            CLIENT_SECRET: 'aqJp3xnXKudgC7RMOshEQP7ZoVKWzoSl'
+        };
+
+        const Toast = Swal.mixin({
+            toast: true,
+            position: "top-end",
+            showConfirmButton: false,
+            timer: 3000,
+            timerProgressBar: true,
+        });
+
+        function App() {
+            const [token, setToken] = useState(localStorage.getItem('access_token') || null);
+            const [loading, setLoading] = useState(false);
+            const [dosenData, setDosenData] = useState(null);
+            const [mahasiswaList, setMahasiswaList] = useState([]);
+            
+            // State Modal & Aksi
+            const [detailHafalan, setDetailHafalan] = useState(null);
+            const [loadingDetail, setLoadingDetail] = useState(false);
+            const [activeTab, setActiveTab] = useState('kartu'); // 'kartu' | 'riwayat'
+            
+            // Form Validasi State
+            const [selectedSurahs, setSelectedSurahs] = useState([]);
+            const [tglSetoran, setTglSetoran] = useState(new Date().toISOString().split('T')[0]); 
+
+            useEffect(() => {
+                if (token) fetchDashboardData();
+            }, [token]);
+
+            const handleLogin = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                const params = new URLSearchParams();
+                params.append('client_id', CONFIG.CLIENT_ID);
+                params.append('client_secret', CONFIG.CLIENT_SECRET);
+                params.append('grant_type', 'password');
+                params.append('username', e.target.username.value);
+                params.append('password', e.target.password.value);
+
+                try {
+                    const response = await axios.post(CONFIG.KC_URL, params, {
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+                    });
+                    setToken(response.data.access_token);
+                    localStorage.setItem('access_token', response.data.access_token);
+                    Toast.fire({ icon: 'success', title: 'Login Berhasil!' });
+                } catch (error) {
+                    Toast.fire({ icon: 'error', title: 'Gagal login. Periksa NIP/Username dan password.' });
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const handleLogout = () => {
+                setToken(null);
+                setDosenData(null);
+                localStorage.removeItem('access_token');
+                Toast.fire({ icon: 'info', title: 'Anda telah logout' });
+            };
+
+            const fetchDashboardData = async () => {
+                try {
+                    const res = await axios.get(`${CONFIG.API_BASE}/dosen/pa-saya`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    if (res.data.response) {
+                        setDosenData(res.data.data);
+                        setMahasiswaList(res.data.data.info_mahasiswa_pa.daftar_mahasiswa);
+                    }
+                } catch (error) {
+                    // Cek jika error.response ada sebelum membaca status
+                    const status = error.response ? error.response.status : null;
+                    if (status === 401) handleLogout();
+                    else Toast.fire({ icon: 'error', title: 'Gagal memuat data dashboard' });
+                }
+            };
+
+            const fetchDetailMahasiswa = async (nim, silent = false) => {
+                if (!silent) {
+                    setLoadingDetail(true);
+                    setActiveTab('kartu');
+                    setSelectedSurahs([]); 
+                    document.getElementById('modal_detail').showModal();
+                }
+                
+                try {
+                    const res = await axios.get(`${CONFIG.API_BASE}/mahasiswa/setoran/${nim}`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    if (res.data.response) setDetailHafalan(res.data.data);
+                } catch (error) {
+                    if (!silent) {
+                        Toast.fire({ icon: 'error', title: 'Gagal memuat detail hafalan' });
+                        document.getElementById('modal_detail').close();
+                    }
+                } finally {
+                    if (!silent) setLoadingDetail(false);
+                }
+            };
+
+            const handleCheckboxChange = (surah) => {
+                const isSelected = selectedSurahs.some(s => s.id_komponen_setoran === surah.id);
+                if (isSelected) {
+                    setSelectedSurahs(selectedSurahs.filter(s => s.id_komponen_setoran !== surah.id));
+                } else {
+                    setSelectedSurahs([...selectedSurahs, {
+                        id_komponen_setoran: surah.id,
+                        nama_komponen_setoran: surah.nama
+                    }]);
+                }
+            };
+
+            const submitValidasi = async () => {
+                if (selectedSurahs.length === 0) return Toast.fire({ icon: 'warning', title: 'Pilih minimal 1 surah!' });
+
+                try {
+                    Swal.fire({ title: 'Memproses...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+                    const payload = {
+                        data_setoran: selectedSurahs,
+                        tgl_setoran: tglSetoran
+                    };
+                    
+                    const res = await axios.post(`${CONFIG.API_BASE}/mahasiswa/setoran/${detailHafalan.info.nim}`, payload, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+
+                    if (res.data.response) {
+                        Swal.fire('Berhasil!', res.data.message, 'success');
+                        setSelectedSurahs([]); 
+                        fetchDetailMahasiswa(detailHafalan.info.nim, true); 
+                        fetchDashboardData(); 
+                    }
+                } catch (error) {
+                    const errMsg = error.response && error.response.data ? error.response.data.message : 'Terjadi kesalahan sistem';
+                    Swal.fire('Gagal', errMsg, 'error');
+                }
+            };
+
+            const submitBatalkan = async (surah) => {
+                Swal.fire({
+                    title: `Batalkan setoran ${surah.nama}?`,
+                    text: "Tindakan ini akan menghapus riwayat validasi untuk surah ini.",
+                    icon: 'warning',
+                    showCancelButton: true,
+                    confirmButtonColor: '#d33',
+                    cancelButtonColor: '#3085d6',
+                    confirmButtonText: 'Ya, Batalkan!'
+                }).then(async (result) => {
+                    if (result.isConfirmed) {
+                        try {
+                            Swal.fire({ title: 'Memproses...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+                            const payload = {
+                                data_setoran: [{
+                                    id: surah.info_setoran.id, 
+                                    id_komponen_setoran: surah.id,
+                                    nama_komponen_setoran: surah.nama
+                                }]
+                            };
+
+                            const res = await axios.delete(`${CONFIG.API_BASE}/mahasiswa/setoran/${detailHafalan.info.nim}`, {
+                                headers: { Authorization: `Bearer ${token}` },
+                                data: payload 
+                            });
+
+                            if (res.data.response) {
+                                Swal.fire('Dibatalkan!', res.data.message, 'success');
+                                fetchDetailMahasiswa(detailHafalan.info.nim, true); 
+                                fetchDashboardData(); 
+                            }
+                        } catch (error) {
+                            const errMsg = error.response && error.response.data ? error.response.data.message : 'Gagal membatalkan';
+                            Swal.fire('Gagal', errMsg, 'error');
+                        }
+                    }
+                });
+            };
+
+            if (!token) {
+                return (
+                    <div className="flex items-center justify-center min-h-screen p-4">
+                        <div className="card w-full max-w-md bg-base-100 shadow-xl border border-base-200">
+                            <div className="card-body">
+                                <h2 className="text-3xl font-bold text-center text-primary mb-2">Setoran TIF</h2>
+                                <p className="text-center text-base-content/60 mb-6">Masuk sebagai Dosen PA</p>
+                                <form onSubmit={handleLogin} className="space-y-4">
+                                    <div className="form-control">
+                                        <label className="label font-medium">Username</label>
+                                        <input type="text" name="username" placeholder="NIP/Username" required className="input input-bordered w-full" />
+                                    </div>
+                                    <div className="form-control">
+                                        <label className="label font-medium">Password</label>
+                                        <input type="password" name="password" placeholder="Password" required className="input input-bordered w-full" />
+                                    </div>
+                                    <button type="submit" className="btn btn-primary w-full mt-4" disabled={loading}>
+                                        {loading ? <span className="loading loading-spinner"></span> : 'Masuk Sistem'}
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div>
+                    <div className="navbar bg-primary text-primary-content shadow-lg px-4 lg:px-8">
+                        <div className="flex-1">
+                            <span className="text-xl font-bold tracking-wide">Sistem Setoran TIF</span>
+                        </div>
+                        <div className="flex-none gap-4">
+                            <div className="hidden sm:flex items-center gap-2">
+                                <span className="font-medium text-sm">{dosenData ? dosenData.nama : 'Memuat...'}</span>
+                            </div>
+                            <button onClick={handleLogout} className="btn btn-sm btn-active btn-primary border-none text-white hover:bg-primary-focus">
+                                Logout
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="max-w-7xl mx-auto p-4 lg:p-8 mt-4">
+                        <div className="card bg-base-100 shadow-sm border border-base-200">
+                            <div className="card-body p-4 sm:p-8">
+                                <h2 className="card-title text-2xl">Daftar Mahasiswa PA</h2>
+                                <p className="text-base-content/60 mb-4">Pilih mahasiswa untuk validasi atau melihat riwayat hafalan.</p>
+                                
+                                <div className="overflow-x-auto">
+                                    <table className="table table-zebra w-full border border-base-200">
+                                        <thead className="bg-base-200 text-sm">
+                                            <tr>
+                                                <th>NIM</th>
+                                                <th>Nama Mahasiswa</th>
+                                                <th>Angkatan</th>
+                                                <th>Progres</th>
+                                                <th className="text-center">Aksi</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {mahasiswaList.map((mhs) => (
+                                                <tr key={mhs.nim}>
+                                                    <td className="font-mono">{mhs.nim}</td>
+                                                    <td className="font-semibold">{mhs.nama}</td>
+                                                    <td>{mhs.angkatan}</td>
+                                                    <td>
+                                                        <div className={`badge font-bold p-3 ${mhs.info_setoran.persentase_progres_setor > 0 ? 'badge-success text-white' : 'badge-ghost'}`}>
+                                                            {mhs.info_setoran.persentase_progres_setor}%
+                                                        </div>
+                                                    </td>
+                                                    <td className="text-center">
+                                                        <button onClick={() => fetchDetailMahasiswa(mhs.nim)} className="btn btn-sm btn-primary">
+                                                            Manajemen Setoran
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                            {mahasiswaList.length === 0 && (
+                                                <tr><td colSpan="5" className="text-center py-6">Belum ada data mahasiswa</td></tr>
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <dialog id="modal_detail" className="modal modal-bottom sm:modal-middle">
+                        <div className="modal-box w-11/12 max-w-5xl bg-base-100 h-[90vh] flex flex-col p-0">
+                            
+                            <div className="bg-base-200 p-6 border-b border-base-300 relative shrink-0">
+                                <form method="dialog"><button className="btn btn-sm btn-circle btn-ghost absolute right-4 top-4">✕</button></form>
+                                {detailHafalan && (
+                                    <div>
+                                        <h3 className="font-bold text-2xl text-primary">{detailHafalan.info.nama}</h3>
+                                        <p className="py-1 font-mono text-base-content/60">{detailHafalan.info.nim} • {detailHafalan.info.angkatan}</p>
+                                        <div className="flex gap-4 mt-4">
+                                            <div className="badge badge-primary badge-outline p-3 font-semibold">Progres: {detailHafalan.setoran.info_dasar.persentase_progres_setor}%</div>
+                                            <div className="badge badge-neutral badge-outline p-3">Disetor: {detailHafalan.setoran.info_dasar.total_sudah_setor} / {detailHafalan.setoran.info_dasar.total_wajib_setor}</div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="tabs tabs-boxed rounded-none bg-base-100 p-2 shrink-0">
+                                <button className={`tab tab-lg ${activeTab === 'kartu' ? 'tab-active bg-primary text-white' : ''}`} onClick={() => setActiveTab('kartu')}>Kartu Hafalan & Validasi</button>
+                                <button className={`tab tab-lg ${activeTab === 'riwayat' ? 'tab-active bg-primary text-white' : ''}`} onClick={() => setActiveTab('riwayat')}>Riwayat (Log)</button>
+                            </div>
+
+                            <div className="p-6 overflow-y-auto flex-1 bg-base-50">
+                                {loadingDetail || !detailHafalan ? (
+                                    <div className="py-20 text-center text-primary"><span className="loading loading-spinner loading-lg"></span></div>
+                                ) : (
+                                    <>
+                                        {activeTab === 'kartu' && (
+                                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                                {detailHafalan.setoran.detail.map((surah) => {
+                                                    const isChecked = selectedSurahs.some(s => s.id_komponen_setoran === surah.id);
+                                                    return (
+                                                        <div key={surah.id} className={`card border ${surah.sudah_setor ? 'border-success bg-success/5' : isChecked ? 'border-primary bg-primary/5' : 'border-base-300'} shadow-sm`}>
+                                                            <div className="card-body p-4">
+                                                                <div className="flex justify-between">
+                                                                    <div>
+                                                                        <h4 className={`font-bold text-lg ${surah.sudah_setor ? 'text-success' : 'text-base-content'}`}>{surah.nama}</h4>
+                                                                        <span className="badge badge-xs badge-neutral mt-1 opacity-50">{surah.label}</span>
+                                                                    </div>
+                                                                    <div className="text-2xl font-serif text-right text-base-content/70" dir="rtl">{surah.nama_arab}</div>
+                                                                </div>
+                                                                
+                                                                <div className="mt-4 pt-3 flex justify-between items-center border-t border-base-200">
+                                                                    {surah.sudah_setor ? (
+                                                                        <>
+                                                                            <span className="text-xs font-semibold text-success flex flex-col">
+                                                                                <span>Tervalidasi:</span>
+                                                                                <span className="font-mono">{surah.info_setoran.tgl_setoran}</span>
+                                                                            </span>
+                                                                            <button onClick={() => submitBatalkan(surah)} className="btn btn-xs btn-error btn-outline" title="Batalkan Validasi">Batalkan</button>
+                                                                        </>
+                                                                    ) : (
+                                                                        <label className="label cursor-pointer p-0 flex justify-between w-full">
+                                                                            <span className="label-text text-base-content/60 font-medium">Pilih untuk validasi</span>
+                                                                            <input type="checkbox" className="checkbox checkbox-primary checkbox-sm" checked={isChecked} onChange={() => handleCheckboxChange(surah)} />
+                                                                        </label>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+
+                                        {activeTab === 'riwayat' && (
+                                            <div className="space-y-4">
+                                                {detailHafalan.setoran.log.length === 0 ? (
+                                                    <p className="text-center text-base-content/50 py-10">Belum ada riwayat tercatat.</p>
+                                                ) : (
+                                                    <ul className="timeline timeline-vertical">
+                                                        {detailHafalan.setoran.log.map((logItem, idx) => (
+                                                            <li key={logItem.id}>
+                                                                {idx > 0 && <hr className="bg-base-300" />}
+                                                                <div className="timeline-start text-xs font-mono text-base-content/50">
+                                                                    {new Date(logItem.timestamp).toLocaleString('id-ID')}
+                                                                </div>
+                                                                <div className="timeline-middle">
+                                                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className={`w-5 h-5 ${logItem.aksi === 'VALIDASI' ? 'text-success' : 'text-error'}`}>
+                                                                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clipRule="evenodd" />
+                                                                    </svg>
+                                                                </div>
+                                                                <div className="timeline-end timeline-box bg-base-100 border border-base-200 w-full mb-4">
+                                                                    <div className={`font-bold text-sm ${logItem.aksi === 'VALIDASI' ? 'text-success' : 'text-error'}`}>Aksi: {logItem.aksi}</div>
+                                                                    <p className="text-sm mt-1">{logItem.keterangan}</p>
+                                                                    <div className="text-xs text-base-content/40 mt-2">Dosen: {logItem.dosen_yang_mengesahkan.nama} | IP: {logItem.ip}</div>
+                                                                </div>
+                                                                {idx !== detailHafalan.setoran.log.length - 1 && <hr className="bg-base-300" />}
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                )}
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+
+                            {activeTab === 'kartu' && detailHafalan && (
+                                <div className="bg-base-200 p-4 border-t border-base-300 flex flex-col sm:flex-row justify-between items-center gap-4 shrink-0">
+                                    <div className="text-sm">
+                                        <span className="font-semibold text-primary">{selectedSurahs.length} Surah</span> dipilih.
+                                    </div>
+                                    <div className="flex gap-2 w-full sm:w-auto">
+                                        <input type="date" className="input input-bordered input-sm" value={tglSetoran} onChange={(e) => setTglSetoran(e.target.value)} title="Tanggal Setoran" />
+                                        <button onClick={submitValidasi} className="btn btn-sm btn-primary flex-1 sm:flex-none" disabled={selectedSurahs.length === 0}>
+                                            Validasi Pilihan
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        <form method="dialog" className="modal-backdrop"><button>tutup</button></form>
+                    </dialog>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
